@@ -1,6 +1,5 @@
 ---
 name: wechat-read
-version: 0.4.0
 description: >-
   读取和总结本机微信聊天记录（Windows）。查询会话列表、读某会话消息、取最近消息、
   搜联系人、看群成员、数消息条数；总结某个群/会话的内容；生成全部会话的微信日报。
@@ -8,6 +7,7 @@ description: >-
   「微信日报」「XX 群在聊什么」「今天有什么重要的」时使用。
 metadata:
   short-description: 微信聊天记录读取与总结（Windows）
+  version: "0.4.0"
 ---
 
 # wechat-read
