@@ -168,8 +168,12 @@ def build_parser() -> argparse.ArgumentParser:
     z = sub.add_parser("summarize", help="准备摘要输入包（供宿主 Agent 推理）")
     z.add_argument("chat", nargs="?", default=None,
                    help="会话名或 wxid；省略则准备全部会话的日报输入包")
-    z.add_argument("--since", default=None, help="起始；省略=今天")
-    z.add_argument("--until", default=None, help="结束；省略=今天")
+    z.add_argument("--since", default=None,
+                   help="起始 YYYY-MM-DD 或 epoch 秒；省略=今天")
+    z.add_argument("--until", default=None,
+                   help="结束 YYYY-MM-DD 或 epoch 秒；省略=今天")
+    z.add_argument("--all", action="store_true",
+                   help="不限时间，从最早一条开始取（想看该会话/全部历史的全部消息时用）")
     z.add_argument("--include-low-value", action="store_true",
                    help="保留低信息量消息（默认过滤）")
     z.add_argument("--no-cache", action="store_true",
@@ -223,7 +227,12 @@ def run(svc: WeChatService, args) -> dict:
         # 只准备确定性输入包，不做任何总结（总结由宿主 Agent 完成）
         from skills import prepare
 
-        kw = {"since": args.since, "until": args.until,
+        # --all：不限起始（想看全部历史时用）。用 0 表示"没有下界"。
+        since, until = args.since, args.until
+        if args.all:
+            since, until = prepare.ALL_TIME, None
+
+        kw = {"since": since, "until": until,
               "include_low_value": args.include_low_value}
         # 默认启用增量缓存；--no-cache 时退回全量（费 token）
         if not args.no_cache:

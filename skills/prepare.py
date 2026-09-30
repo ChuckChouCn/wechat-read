@@ -152,6 +152,41 @@ def _iso_ts(ts: int) -> str:
     return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
 
 
+# 「不限时间」的哨兵值。传它当 since 表示从最早一条开始取。
+ALL_TIME = 0
+
+
+def _default_range(since, until) -> tuple:
+    """补全时间范围。**单群和日报都必须走这里**，否则两条路的默认值会不一致。
+
+    规则（与 `--since` 的 --help 文案一致）：
+
+        since/until 都给        -> 原样用
+        只给 since              -> until = since（当天）
+        只给 until              -> since = 当天（截到 until 为止）
+        都不给                  -> 今天一整天 00:00:00 ~ 23:59:59
+
+    历史 bug：单群那条路**没有**这个补全，`since=None` 被原样传给
+    list_messages_range，而 None 在那里表示「不限起始」—— 于是文档说
+    「省略即今天」，底层却把一个群从建群到现在的全部消息都拉了回来
+    （实测某群一次拉出 9 月 23 日以来的 3000+ 条）。
+    """
+    if since is None and until is None:
+        today = datetime.datetime.now().strftime("%Y-%m-%d")
+        return today, today
+    if since is None:
+        # 只给了 until：从"那一天"开始，不要一路回溯到建群
+        return until, until
+    if until is None:
+        # 注意用 `is None` 而不是 falsy 判断：ALL_TIME(0) 是合法值，
+        # 表示"不限起始"，不能顺手把 until 也设成 0（那会变成截止到 1970 年，
+        # 一条都取不到）。
+        if since == ALL_TIME:
+            return ALL_TIME, None
+        return since, since
+    return since, until
+
+
 # ============================================================
 # summarize_chat 的输入包
 # ============================================================
@@ -167,6 +202,9 @@ def chat_pack(svc: WeChatService, chat: str, since=None, until=None,
         结构化输入包，含 chat / range / messages[] / stats / 给 Agent 的指引。
         **不含任何总结内容** —— 那由宿主 Agent 产出。
     """
+    # 补全时间范围：省略即今天（不能把 None 直接传下去 —— 那表示不限时间）
+    since, until = _default_range(since, until)
+
     # 用「报表语义」全量取：区间内一条不落。
     # 不能用 list_messages —— 它是翻页语义（DESC LIMIT），
     # 当天消息多时会把早晨的静默丢掉。
@@ -244,12 +282,7 @@ def digest_pack(svc: WeChatService, since=None, until=None,
         cache: 摘要缓存；传入即启用增量
         rebuild: 忽略游标，从头处理（用户显式要求时用）
     """
-    if since is None and until is None:
-        today = datetime.datetime.now().strftime("%Y-%m-%d")
-        since = until = today
-    elif until is None:
-        # 只给了 since：默认到"现在"，而不是把 None 当值用
-        until = since
+    since, until = _default_range(since, until)
 
     messages = _fetch_all(svc, since, until)
     if not messages:

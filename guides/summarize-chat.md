@@ -50,7 +50,8 @@ wechat-read summarize "群名" --since 2026-09-29 --until 2026-09-29 --output pa
 | 参数 | 说明 |
 |---|---|
 | `chat` | 会话名或 wxid（必填；省略则走日报） |
-| `--since` / `--until` | `YYYY-MM-DD` 或 epoch 秒；都省略默认今天 |
+| `--since` / `--until` | `YYYY-MM-DD` 或 epoch 秒；**都省略 = 今天** |
+| `--all` | 不限时间，从最早一条开始取（"这个群从头到现在聊了什么"） |
 | `--output` | 写输入包到文件（中间产物）；不带给则输出到 stdout |
 | `--include-low-value` | 保留低信息量消息（默认过滤） |
 

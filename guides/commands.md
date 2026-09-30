@@ -147,7 +147,8 @@ wechat-read summarize --since 2026-09-29 --until 2026-09-29 --output pack.json
 | 参数 | 说明 |
 |---|---|
 | `chat` | 会话名或 wxid；**省略 = 日报** |
-| `--since` / `--until` | `YYYY-MM-DD` 或 epoch 秒；都省略默认今天 |
+| `--since` / `--until` | `YYYY-MM-DD` 或 epoch 秒；**都省略 = 今天** |
+| `--all` | 不限时间，从最早一条开始取（看全部历史时用） |
 | `--output` | 写输入包到文件（中间产物，UTF-8 无 BOM）；不带给则输出到 stdout |
 | `--include-low-value` | 保留低信息量消息（默认过滤） |
 | `--no-cache` | 不用增量缓存，每次全量（费 token） |
