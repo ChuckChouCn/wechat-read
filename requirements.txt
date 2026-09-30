@@ -1,0 +1,12 @@
+# 微信数据读取所需依赖（仅 2 个，都是纯本地库）
+pycryptodome>=3.20.0   # SQLCipher 页解密（AES-256-CBC）
+zstandard>=0.22.0      # 解压微信压缩的消息内容
+
+# 不需要 sqlcipher3：本项目的页级解密是自实现的
+# （db/crypto.py，纯 Python + pycryptodome，Windows 上还可退到系统自带 bcrypt.dll），
+# 解出来就是标准 SQLite 格式，交给内置 sqlite3 模块读。
+# 曾把它列为依赖，但 PyPI 上没有 Windows 版 wheel，会直接卡住安装。
+
+# 说明：
+# 本工具不依赖任何 LLM SDK，不需要任何大模型 API Key。
+# 摘要与日报由宿主 Agent（Claude Code / Codex 等）完成推理。

@@ -1,0 +1,42 @@
+# 密钥文件 —— 能解密聊天记录，绝不能提交
+keys.json
+keys_*.json
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# 输出
+*.html
+日报*.md
+/tmp_*
+_*.json
+
+# 内部文档与验证报告（不公开）
+docs/
+VERIFICATION.md
+
+# 本地个人配置
+.claude/
+
+# 参考用的外部仓库（不属于本项目）
+reference/
+wechat-export-tool/
+yichen-skills/
+scratch_probe/
+
+# 编辑器 / 系统
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# 测试产物
+scratch_probe/*.db
+
+# 测试残留
+cursor
