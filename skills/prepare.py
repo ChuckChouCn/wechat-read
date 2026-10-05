@@ -409,6 +409,16 @@ def _one_line(s) -> str:
     return " ".join(str(s or "").split())
 
 
+def _volume_hint(pack: dict) -> str:
+    """产出条数要求，取自包的 instructions.output_volume。
+
+    单独提出来放到紧凑文本最前面：模型先读到条数要求，才会往多了挖 ——
+    这条规则原本只在 JSON 包的 instructions 里，而 `--format text`
+    （模型现在真正读的形态）不包含 instructions，等于规则没起作用。
+    """
+    return str((pack.get("instructions") or {}).get("output_volume") or "").strip()
+
+
 def _msg_line(e: dict) -> str:
     return (f"{e.get('id')} | {_short_time(e.get('time'))} | "
             f"{_one_line(e.get('sender'))} | {_one_line(e.get('content'))}")
@@ -451,6 +461,8 @@ def _compact_chat(pack: dict) -> str:
     msgs = pack.get("messages") or []
 
     out = [
+        # 产出条数规则放在最前 —— 模型先读到它，才会往多了挖
+        "# 产出要求：" + _volume_hint(pack),
         f"# kind={pack.get('kind')}",
         f"# chat={chat.get('display_name')} ({chat.get('username')}) "
         f"group={1 if chat.get('is_group') else 0}",
@@ -487,6 +499,8 @@ def _compact_digest(pack: dict) -> str:
 
     total = sum(len(c.get("messages") or []) for c in chats)
     out = [
+        # 产出条数规则放在最前 —— 模型先读到它，才会往多了挖
+        "# 产出要求：" + _volume_hint(pack),
         f"# kind={pack.get('kind')}",
         f"# range={rng.get('since')} ~ {rng.get('until')}  "
         f"chats={len(chats)} messages={total}",
@@ -551,14 +565,16 @@ def _fetch_all(svc: WeChatService, since, until) -> list[dict]:
 # 给宿主 Agent 的指引（也内嵌在包里，便于自描述）
 # ============================================================
 _CHAT_INSTRUCTIONS = {
+    # 放在第一位（重要）：产出条数是最容易做不够的指标，规则必须最先被读到。
+    # 同时由 compact_text 提到文本头部 —— 那才是模型真正读的东西。
+    "output_volume": (
+        "话题数量按内容来，不设上限。一个活跃的群一天可能聊了十几件事，"
+        "都要挖出来。少于 5 个通常意味着挖得不够深。"
+    ),
     "goal": "把这个会话的消息做深度挖掘，按话题类型整理",
     "data_completeness": (
         "messages[] 是该时间范围内的**全部消息**，不是抽样。"
         "低信息量消息只是被标记 low_value，仍然在列表里。"
-    ),
-    "output_volume": (
-        "话题数量按内容来，不设上限。一个活跃的群一天可能聊了十几件事，"
-        "都要挖出来。少于 5 个通常意味着挖得不够深。"
     ),
     "no_importance_judgment": (
         "**不要判断重要性**，不要分「重点」，也不要写待办、需要回复 —— "
@@ -590,11 +606,13 @@ _CHAT_INSTRUCTIONS = {
 }
 
 _DIGEST_INSTRUCTIONS = {
-    "goal": "把这一天的消息做深度挖掘，按话题类型整理成简报",
+    # 放在第一位（重要）：产出条数是最容易做不够的指标，规则必须最先被读到。
+    # 同时由 compact_text 提到文本头部 —— 那才是模型真正读的东西。
     "output_volume": (
         "目标 **15-40 个话题**。一天几百上千条消息里，"
         "值得记录的信息远不止三五个。少于 15 个通常意味着挖得不够深。"
     ),
+    "goal": "把这一天的消息做深度挖掘，按话题类型整理成简报",
     "no_importance_judgment": (
         "**不要判断重要性。** 不需要分「重点」和「其他」，"
         "也不要写待办、需要回复这类推断 —— 那是主观判断，容易出错。\n"
