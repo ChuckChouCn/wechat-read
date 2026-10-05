@@ -91,8 +91,11 @@ wechat-read 把这件事交给 AI —— 它读出你本机的聊天记录，
 
 ```powershell
 & "<skills 目录>\wechat-read\wechat-read.cmd" sessions --limit 10
-& "<skills 目录>\wechat-read\wechat-read.cmd" summarize "群名" --output pack.json
+& "<skills 目录>\wechat-read\wechat-read.cmd" summarize "群名" --format text --output chat.txt
 ```
+
+> 读消息用 `--format text`（一条消息一行，体积约为 JSON 形态的 1/4）。
+> `--format pack`（JSON，默认）只在 `render --verify-against` 校验时需要。
 
 ---
 

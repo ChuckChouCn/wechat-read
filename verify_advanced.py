@@ -130,11 +130,25 @@ def main() -> int:
     with open("/tmp/_pack_chat.json", "w", encoding="utf-8") as fh:
         json.dump(pack, fh, ensure_ascii=False)
 
-    # 渲染三种格式
-    for fmt in ("html", "json"):
+    # 渲染四种格式（text/markdown 是给人和 Agent 看的紧凑形态）
+    for fmt in ("html", "json", "text", "markdown"):
         code, out, _ = run_cli(["render", "/tmp/_agent_chat.json", "--format", fmt], env)
         ok = code == 0 and len(out) > 50
         chk(f"渲染 {fmt}", ok, f"{len(out)} 字符")
+
+    # --format text 拿到的输入包必须是一条一行的紧凑文本（体积远小于 JSON）
+    code, txt, _ = run_cli(["summarize", chat_name, "--since", "2026-09-27",
+                            "--format", "text"], env)
+    compact = json.dumps(pack, ensure_ascii=False, indent=2)
+    chk("summarize --format text 可运行", code == 0 and txt.startswith("# kind="),
+        f"exit={code}")
+    chk("紧凑文本显著小于 JSON", 0 < len(txt) < len(compact),
+        f"{len(txt)} vs {len(compact)} 字符")
+    # 一条消息一行：非注释行数 == 包里的消息数
+    msg_lines = [ln for ln in txt.splitlines()
+                 if ln.strip() and not ln.startswith("#")]
+    chk("紧凑文本一条消息一行", len(msg_lines) == len(pack["messages"]),
+        f"{len(msg_lines)} 行 / {len(pack['messages'])} 条消息")
 
     # 溯源：带校验渲染，编造 id 必须被丢弃
     code, out, err = run_cli(["render", "/tmp/_agent_chat.json", "--format", "html",
@@ -191,7 +205,7 @@ def main() -> int:
         with open("/tmp/_agent_digest.json", "w", encoding="utf-8") as fh:
             json.dump(digest_out, fh, ensure_ascii=False)
 
-        for fmt in ("html", "json"):
+        for fmt in ("html", "json", "text", "markdown"):
             code, out, _ = run_cli(["render", "/tmp/_agent_digest.json",
                                     "--format", fmt], env)
             chk(f"日报渲染 {fmt}", code == 0 and len(out) > 50, f"{len(out)} 字符")

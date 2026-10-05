@@ -91,51 +91,44 @@
 
 ## 第 1 步：取输入包
 
-**用 `--output` 直接写文件，不要用 shell 的 `>` 重定向。**
+先用 **`--format text`** 拿一条一行的紧凑文本，这是给你（Agent）读的形态：
 
 ```bat
 rem 默认今天
-wechat-read summarize --output pack.json
+wechat-read summarize --format text --output digest.txt
 
 rem 指定范围
-wechat-read summarize --since 2026-09-28 --until 2026-09-29 --output pack.json
+wechat-read summarize --since 2026-09-28 --until 2026-09-29 --format text --output digest.txt
 ```
 
-> ⚠️ **为什么必须用 `--output` 而不是 `>`：** 日报的输入包可能几 MB，
-> 要落盘才能读。而 PowerShell 的 `>` 不可控 —— **5.1 写 UTF-16、
-> 7.x 写带 BOM 的 UTF-8**，都会让后续读取报编码错，逼你额外写一个
-> "清洗编码"的脚本。`--output` 由程序自己写标准 UTF-8，没有这个环节。
+**然后按 `offset` / `limit` 分页读完 `digest.txt`**（每页 ~800 行，先看回执里的
+`lines` 算页数）。文本按会话分段，每段以 `## 群名` 开头，段内一条消息一行；
+文件头是范围与对账信息，每段还会带上该群的 `previous_summary`（若有）。
 
 > **不带 `chat` 参数**就是日报。带了 `chat` 会走会话摘要。
 
-返回结构：
+### 什么时候才要 `--format pack`（JSON，默认）
 
-```json
-{
-  "kind": "daily_digest_input",
-  "range": {"since": "2026-09-29", "until": "2026-09-29"},
-  "chats": [{
-    "username": "12345678901@chatroom",
-    "display_name": "示例交流群A",
-    "is_group": true,
-    "message_count": 100,
-    "excluded_low_value": 9,
-    "messages": [
-      {"id": "12345678901@chatroom:2985", "time": "...", "sender": "用户甲",
-       "type": "text", "content": "...", "low_value": false, "reply_signal": false}
-    ],
-    "reply_signals": ["12345678901@chatroom:2990"]
-  }],
-  "stats": {"message_count": 299, "low_value_count": 36, "top_senders": [...]},
-  "incremental": {"enabled": true, "chats_with_updates": 7,
-                  "chats_reused_from_cache": 3},
-  "instructions": {...}
-}
+**只有第 3 步 `render --verify-against` 需要 JSON 形态**，那时再取一次即可。
+JSON 形态体积约为文本的 4 倍，**不要用它来读消息**。
+
+> ⚠️ **两个形态都用 `--output` 落盘，不要用 shell 的 `>` 重定向。**
+> 日报的输入包可能几 MB，而 PowerShell 的 `>` 不可控 —— **5.1 写 UTF-16、
+> 7.x 写带 BOM 的 UTF-8**，都会让后续读取报编码错，逼你额外写一个
+> "清洗编码"的脚本。`--output` 由程序自己写标准 UTF-8，没有这个环节。
+
+文本形态长这样：
+
 ```
+# kind=daily_digest_input
+# range=2026-09-29 ~ 2026-09-29  chats=2 messages=299
+# audit: fetched=299 kept=299 loss=0 zero_loss=True
+# 每行一条：id | MM-DD HH:MM | 发送者 | 内容
+#   已有摘要 群C: {"overview":"..."}
 
-> `chats[].messages[]` 已过滤低信息量；`reply_signals` 是**可能**需要回应的
-> 消息 id 列表（规则匹配的结果，供你参考，不是最终判断）。
-> `instructions` 内嵌了同样的规则，包是自描述的。
+## 示例交流群A (12345678901@chatroom) group=1 messages=100 new=100 excluded_low_value=9
+12345678901@chatroom:2985 | 09-29 09:01 | 用户甲 | ...
+```
 
 ## 第 2 步：你来做挖掘归纳
 
@@ -227,12 +220,13 @@ HTML 是单文件、自带样式，双击就能看，可以直接发给别人或
 日报的输入是**增量**的：已经总结过、且没有新消息的会话不会重复出现
 在 `chats[]` 里，而是放在 `cached_summaries[]` 直接复用。
 
-- `chats[]`：有新消息的会话。**读完其中的 messages[]，一条不要跳过。**
-- `cached_summaries[]`：已总结过、无新内容的。**直接采信，不要重新分析。**
-- `chats[].previous_summary`：该会话已有的结论，在其基础上补充新消息即可。
+- `chats[]`：有新消息的会话（文本里是 `## 群名` 段落）。**读完全部消息行，一条不要跳过。**
+- `cached_summaries[]`：已总结过、无新内容的（文本里是文件头的 `#   已有摘要`）。**直接采信，不要重新分析。**
+- `chats[].previous_summary`：该会话已有的结论（在段落标题下一行），在其基础上补充即可。
 
 **不要因为消息数字大就自行截断或抽样。** 那是"需要你处理的新消息数"，
-不是"上限"。全量读完再总结。
+不是"上限"。分几页读都要读完，再总结。若确实大到读不完（几万条），
+**告诉用户**，不要偷偷只总结一部分。
 
 参数：
 
@@ -262,19 +256,23 @@ HTML 是单文件、自带样式，双击就能看，可以直接发给别人或
 ## 完整示例
 
 ```bat
-rem 1. 取今天全部会话的输入包（直接写 UTF-8 文件，不要用 > 重定向）
+rem 1. 取今天的文本形态（一条一行；直接写 UTF-8 文件，不要用 > 重定向）
+wechat-read summarize --format text --output digest.txt
+
+rem 2. 你是模型 —— 分页读完 digest.txt，挖掘归纳，产出 日报.json
+rem    （用你的写文件能力直接写；消息已在 digest.txt 里，无需再 dump）
+
+rem 3. 校验要 JSON 形态，再取一次 pack（同一个范围）
 wechat-read summarize --output pack.json
 
-rem 2. 你是模型 —— 直接读 pack.json，挖掘归纳，产出 日报.json
-rem    （用你的写文件能力直接写，不要写脚本去 dump 消息或构造 JSON）
-
-rem 3. 产出 HTML 日报（用户要的就是「日报」这份文档）
+rem 4. 产出 HTML 日报（用户要的就是「日报」这份文档）
 wechat-read render 日报.json --verify-against pack.json --format html --output 日报.html
 ```
 
-> **三步就够，不需要任何过渡脚本。** 如果你发现自己在写
-> "清洗编码""导出消息文本""构造合法 JSON" 这类辅助脚本，
-> 说明某一步用错了 —— 多半是第 1 步用了 `>` 而不是 `--output`。
+> **四步就够，不需要任何过渡脚本。** 内容由 `--format text` 直接给成一条一行的
+> 文本，结论由你直接写成 JSON。如果你发现自己在写 `python -c` 去打印消息、
+> 或写"清洗编码""导出文本"的脚本，说明用错了形态 ——
+> 读消息应该用 `--format text`，而不是去啃 JSON 或手搓脚本。
 
 交付给用户时，在聊天框里说清楚文件在哪、里面有什么：
 

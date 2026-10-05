@@ -7,7 +7,7 @@ description: >-
   「微信日报」「XX 群在聊什么」「今天有什么重要的」时使用。
 metadata:
   short-description: 微信聊天记录读取与总结（Windows）
-  version: "0.4.0"
+  version: "0.5.0"
 ---
 
 # wechat-read
@@ -91,16 +91,39 @@ wechat-read status                        rem 环境自检
 ## 最快路径：问某个群在聊什么
 
 ```bat
-wechat-read contacts search "群名"                  rem 1. 找到群
-wechat-read summarize "群名" --output pack.json    rem 2. 取今天全部消息
+wechat-read contacts search "群名"                       rem 1. 找到群
+wechat-read summarize "群名" --format text --output chat.txt   rem 2. 取消息
 ```
 
-然后**直接读 `pack.json` 并回答**。四步就结束 —— 不要读源码、不要写脚本、
-不要 `--no-cache` 重跑、不要生成 HTML。
+然后**读 `chat.txt`**（一条消息一行），据此回答。三步结束 ——
+不要读源码、不要 `--no-cache` 重跑、不要生成 HTML。
 
 - **不用带 `--since`** —— 省略即今天（`00:00:00 ~ 23:59:59`）。
 - **不用加 `--no-cache`** —— 缓存给的 `messages[]` 是新消息，
   加上 `previous_summary` 就是完整视图。看到 "新消息数" 比总数少是正常的。
+
+### 怎么把 `chat.txt` 读进上下文（关键）
+
+`--format text` 让 CLI 输出**一条消息一行**的紧凑文本，体积约为 JSON 的
+**1/4**（实测 1115 条消息：JSON 296 KB / 11228 行 → 文本 76 KB / 1122 行）。
+但**大群仍可能超过读文件工具的单次上限**，所以按下面来：
+
+1. **先看回执里的 `lines`** —— 它告诉你这个文件有多少行，据此算要读几页
+   （按每页 ~800 行估）。这一步是让你**不必试错**。
+2. **按 `offset` / `limit` 分页读**，直到读完。文件头的 `#` 行是范围与
+   对账信息，每页都会带上，方便你随时核对。
+3. 也可以让 CLI 直接切片输出（不落盘、不读文件）：
+
+```bat
+wechat-read summarize "群名" --format text --limit 800             rem 第 1 段
+wechat-read summarize "群名" --format text --limit 800 --offset 800  rem 第 2 段
+```
+
+> **为什么不用 `python -c "..."` 去打印消息**：Windows PowerShell 会把
+> 传给可执行程序的参数里的双引号剥掉，`python -c "import json; ..."` 这种
+> 单行命令**必报 SyntaxError**（只要命令里出现 `m["content"]` 这类字典取值）。
+> 上面的 `--format text` 就是为替代它而加的。要用 Python 请写脚本文件，
+> 别写单行 `-c`。
 
 > **先看一眼返回值里的 `range`**：它表示实际取到的时间范围。
 > 如果 `range.since` 明显早于你要的范围，说明时间参数没生效 ——
@@ -139,6 +162,27 @@ wechat-read summarize > pack.json             rem 错
 ```
 
 **写结论 JSON 时**用你自己的写文件能力直接写 UTF-8，同样别经过 `>`。
+
+## PowerShell 引号：别写 `python -c`
+
+本 Skill 只在 Windows 上跑，而 PowerShell 调用外部程序时**会把参数里的
+双引号剥掉**。所以这种写法 100% 失败：
+
+```powershell
+python -c "import json; d=json.load(open('pack.json')); print(d['messages'][0]['content'])"
+# PowerShell 把内层双引号吃掉 → Python 收到残缺代码 → SyntaxError
+```
+
+**要跑 Python 就写脚本文件再执行**，不要用单行 `-c`：
+
+```powershell
+# 对：先写一个 read_pack.py，再执行
+python read_pack.py
+```
+
+**但更常见的情况是你根本不需要 Python** —— 读消息用
+`summarize --format text`（见上文「最快路径」），
+它已经把内容整理成一条一行的纯文本了。
 
 ## 只支持 Windows
 

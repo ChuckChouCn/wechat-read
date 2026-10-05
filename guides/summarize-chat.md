@@ -29,30 +29,59 @@
 
 ## 第 1 步：取输入包
 
-**用 `--output` 直接写文件，不要用 shell 的 `>` 重定向。**
+先用 **`--format text`** 拿一条一行的紧凑文本，这是给你（Agent）读的形态：
 
 ```bat
-wechat-read summarize "群名" --since 2026-09-29 --until 2026-09-29 --output pack.json
+wechat-read summarize "群名" --format text --output chat.txt
 ```
 
-> ⚠️ **为什么必须用 `--output` 而不是 `>`：** 输入包可能有几百 KB，
-> 要落盘才能读。而 PowerShell 的 `>` 不可控 —— **5.1 写 UTF-16、
-> 7.x 写带 BOM 的 UTF-8**，两者都会让后续读取报编码错，逼你额外写一个
-> "清洗编码"的脚本。`--output` 由程序自己写标准 UTF-8，没有这个环节。
-
-写完只回一个简短回执（不给 stdout 灌几百 KB）：
+回执告诉你文件有多少行，据此决定读几页：
 
 ```json
-{"written": "pack.json", "kind": "chat_summary_input",
- "messages": 317, "bytes": 61420, "hint": "把该文件路径连同提示词一起交给模型"}
+{"written": "chat.txt", "kind": "chat_summary_input", "format": "text",
+ "lines": 1122, "total_lines": 1122, "bytes": 76130,
+ "hint": "用读文件工具按 offset/limit 分页读完这个文件"}
 ```
+
+**然后按 `offset` / `limit` 分页读完它**（每页 ~800 行），不要一次读整个文件。
+再大就用 CLI 切片，连文件都不用读：
+
+```bat
+wechat-read summarize "群名" --format text --limit 800 --offset 800
+```
+
+### 什么时候才要 `--format pack`（JSON，默认）
+
+**只有第 3 步 `render --verify-against` 需要 JSON 形态**。要校验结论时再取一次：
+
+```bat
+wechat-read summarize "群名" --format pack --output pack.json
+```
+
+JSON 形态体积约为文本的 **4 倍**（1115 条 → 296 KB / 11228 行），
+**不要用它来读消息** —— 那是文本形态的活。
+
+> ⚠️ **两个形态都用 `--output` 落盘，不要用 shell 的 `>` 重定向。**
+> PowerShell 的 `>` 不可控 —— **5.1 写 UTF-16、7.x 写带 BOM 的 UTF-8**，
+> 两者都会让后续读取报编码错，逼你额外写一个"清洗编码"的脚本。
+> `--output` 由程序自己写标准 UTF-8，没有这个环节。
+
+行格式（每行一条，字段用 ` | ` 分隔，第 4 段起整段是内容）：
+
+```
+<消息id> | <MM-DD HH:MM> | <发送者> | <内容>
+```
+
+开头的 `#` 行是范围、对账（`loss` 必须为 0）、参与人统计 —— 先读它们。
 
 | 参数 | 说明 |
 |---|---|
 | `chat` | 会话名或 wxid（必填；省略则走日报） |
 | `--since` / `--until` | `YYYY-MM-DD` 或 epoch 秒；**都省略 = 今天** |
 | `--all` | 不限时间，从最早一条开始取（"这个群从头到现在聊了什么"） |
-| `--output` | 写输入包到文件（中间产物）；不带给则输出到 stdout |
+| `--format` | `text`（读消息用）或 `pack`（默认，`render --verify-against` 用） |
+| `--limit` / `--offset` | 仅 `text`：按行切片，用于把大包切成几段 |
+| `--output` | 写文件（中间产物）；不带给则输出到 stdout |
 | `--include-low-value` | 保留低信息量消息（默认过滤） |
 
 返回结构：
@@ -80,12 +109,9 @@ wechat-read summarize "群名" --since 2026-09-29 --until 2026-09-29 --output pa
 
 ## 第 2 步：你来做总结
 
-**直接读 `pack.json`，不要写脚本去 dump 消息文本。**
-`messages[]` 已经是干净的 JSON 数组，你的读文件能力就能直接看；
-再写一个 `dump_xxx.py` 去提取文本是多余的一层。
-
-基于 `messages[]`，按下面 schema 产出结论 JSON。**同样用你的写文件能力
-直接写**，不要写脚本去"构造合法 JSON" —— 你写出来的就是 JSON：
+**读第 1 步的 `chat.txt`**（已是一条一行的纯文本，用读文件工具分页读完），
+基于它产出结论 JSON。**用你的写文件能力直接写** ——
+你写出来的就是 JSON，不需要脚本去"构造合法 JSON"：
 
 
 ```json
@@ -135,6 +161,9 @@ wechat-read summarize "群名" --since 2026-09-29 --until 2026-09-29 --output pa
 ## 第 3 步：交付
 
 **默认：直接在聊天框回答。不要生成 HTML 文件。**
+
+> 想少写点字就直接渲染文本骨架：`wechat-read render summary.json --format text`
+> —— 它把话题/决定/待办排成中文文本，你在聊天框里改改就能用。
 
 除非用户明说了「存成网页」「生成 HTML」「导出」「保存成文件」——
 那才走下面的可选渲染。
@@ -217,18 +246,22 @@ wechat-read render 结论.json --verify-against pack.json --format html --output
 ## 完整示例
 
 ```bat
-rem 1. 取输入包（直接写 UTF-8 文件，不要用 > 重定向）
+rem 1. 取文本形态（读消息用；直接写 UTF-8 文件，不要用 > 重定向）
+wechat-read summarize "示例群D" --since 2026-09-27 --format text --output chat.txt
+
+rem 2. 你是模型 —— 分页读完 chat.txt，产出 summary.json（用你的写文件能力直接写）
+
+rem 3. 校验要 JSON 形态，再取一次 pack（同一个范围）
 wechat-read summarize "示例群D" --since 2026-09-27 --output pack.json
 
-rem 2. 你是模型 —— 读 pack.json，产出 summary.json（用你的写文件能力，直接写 UTF-8）
-
-rem 3. 校验+存缓存（不产文件），然后在聊天框把内容回答给用户
+rem 4. 校验+存缓存（不产文件），然后在聊天框把内容回答给用户
 wechat-read render summary.json --verify-against pack.json --format json
 ```
 
-> 全程**不需要写任何过渡脚本**。第 1 步落盘、第 2 步你直接产出结论 JSON、
-> 第 3 步校验 —— 三步就够。如果发现自己要写"清洗编码""导出消息文本"
-> 这类辅助脚本，说明哪里用错了（多半是第 1 步用了 `>`）。
+> 全程**不需要写任何过渡脚本**：内容由 `--format text` 直接给成一条一行的文本，
+> 结论由你直接写成 JSON。如果你发现自己在写 `python -c` 去打印消息、
+> 或写"清洗编码""导出文本"的脚本，说明用错了形态 ——
+> 读消息应该用 `--format text`，而不是去啃 JSON 或手搓脚本。
 >
 > 用户在聊天框里问的，就在聊天框里答。**不要自作主张生成 HTML 文件。**
 

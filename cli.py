@@ -89,6 +89,51 @@ def fail(err: ServiceError) -> int:
     return err.exit_code
 
 
+class _TextOut:
+    """原样写到 stdout 的文本（非 JSON）。
+
+    只有 `summarize --format text` 用。返回它而不是直接写，是为了让
+    输出仍集中在 main 一处，且便于测试捕获。
+    """
+    def __init__(self, body: str):
+        self.body = body
+
+
+def _count_lines(text: str) -> int:
+    return text.count("\n") + (0 if text.endswith("\n") else 1)
+
+
+def _slice_lines(text: str, offset: int, limit: int) -> tuple[str, int, int]:
+    """按行切片，**保留开头的 `#` 元信息行**（Agent 每段都靠它对账）。
+
+    返回 (切片文本, 本段行数, 总行数)。总行数含元信息行 —— 回执里的
+    `total_lines` 是给 Agent 算「要读几页」用的。
+    """
+    lines = text.splitlines()
+    n_head = 0
+    while n_head < len(lines) and lines[n_head].startswith("#"):
+        n_head += 1
+    head, body = lines[:n_head], lines[n_head:]
+    body = [ln for ln in body if ln.strip()]      # 去掉空行分隔（日报用）
+    offset = max(0, offset)
+    chunk = body[offset:offset + limit] if limit > 0 else body[offset:]
+    out = head + [""] + chunk
+    return "\n".join(out) + "\n", len(chunk), len(body)
+
+
+def _write_text(path: str, text: str) -> int:
+    """写 UTF-8 文本文件（无 BOM），用于 `--format text --output`。"""
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        with open(path, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(text)
+    except OSError as exc:
+        emit({"error": {"code": "INVALID_PARAM",
+                        "message": f"写入失败: {path} ({exc})"}})
+        return 2
+    return 0
+
+
 # ============================================================
 # 参数
 # ============================================================
@@ -180,6 +225,15 @@ def build_parser() -> argparse.ArgumentParser:
                    help="不用增量缓存，每次都给全部消息（费 token）")
     z.add_argument("--rebuild", action="store_true",
                    help="忽略已有游标，从头处理")
+    z.add_argument("--format", dest="pack_format", default="pack",
+                   choices=["pack", "text"],
+                   help="pack=结构化 JSON（默认，render 校验用）；"
+                        "text=一条消息一行的紧凑文本（给宿主 Agent 读，体积约为 JSON 的 1/4）")
+    z.add_argument("--limit", type=int, default=0,
+                   help="仅 text 格式：本段最多输出多少行（≈消息条数，0=全部）。"
+                        "用于把大包切成 Agent 读得进的几段")
+    z.add_argument("--offset", type=int, default=0,
+                   help="仅 text 格式：从第几行开始（配合 --limit 翻页）")
     z.add_argument("--output", default=None, metavar="PACK.json",
                    help="直接写入文件（UTF-8）。**强烈建议用它而不是 `>` 重定向** —— "
                         "PowerShell 的 `>` 会写成带 BOM 的 UTF-16，后续读取会报编码错")
@@ -244,6 +298,31 @@ def run(svc: WeChatService, args) -> dict:
         else:
             pack = prepare.digest_pack(svc, **kw)
 
+        text_mode = args.pack_format == "text"
+
+        # text 形态：一条消息一行，直接给 Agent 读。
+        # 不带 --output 时本函数返回字符串，由 main 原样写到 stdout ——
+        # 这正是「手搓 python -c 打印消息」的替代品（那种写法在
+        # PowerShell 下必踩引号坑）。见 guides/summarize-chat.md。
+        if text_mode:
+            body = prepare.compact_text(pack)
+            # 按行切片。每条消息行都带自己的会话 id，所以日报切片也不会
+            # 丢失"这条属于哪个群"的归属。`#` 元信息行每段都保留。
+            if args.limit or args.offset:
+                body, shown, total = _slice_lines(body, args.offset, args.limit)
+            else:
+                shown, total = _count_lines(body), _count_lines(body)
+            if args.output:
+                if _write_text(args.output, body) != 0:
+                    return None
+                emit({"written": args.output, "kind": pack.get("kind"),
+                      "format": "text",
+                      "lines": shown, "total_lines": total,
+                      "bytes": os.path.getsize(args.output),
+                      "hint": "用读文件工具按 offset/limit 分页读完这个文件"})
+                return None
+            return _TextOut(body)
+
         # --output：直接由本程序写 UTF-8，避开 PowerShell 重定向的编码坑。
         # 写完只回一个简短回执 —— 输入包本身可能几百 KB，
         # 没必要再往 stdout 灌一遍（调用方要读的是文件）。
@@ -253,10 +332,13 @@ def run(svc: WeChatService, args) -> dict:
             msgs = (sum(len(c.get("messages") or []) for c in pack["chats"])
                     if pack.get("kind") == "daily_digest_input"
                     else len(pack.get("messages") or []))
+            # lines 是关键：Agent 据此判读文件工具要分几页，不必试错
             emit({"written": args.output,
                   "kind": pack.get("kind"),
+                  "format": "pack",
                   "messages": msgs,
                   "bytes": os.path.getsize(args.output),
+                  "lines": _count_lines(_read_text_file(args.output)),
                   "hint": "把该文件路径连同提示词一起交给模型"})
             return None
         return pack
@@ -691,7 +773,9 @@ def main(argv=None) -> int:
         with WeChatService(args.db_dir, args.keys) as svc:
             result = run(svc, args)
         # summarize 的 text/markdown/html 已在 run 内直接输出
-        if result is not None:
+        if isinstance(result, _TextOut):
+            sys.stdout.write(result.body)
+        elif result is not None:
             emit(result)
         return 0
     except ServiceError as e:

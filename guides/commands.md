@@ -137,11 +137,19 @@ wechat-read count "群名" --start-time "2026-09-29"
 
 **只准备输入，不做总结。** 总结由你（Agent）完成。
 
+**读消息用 `--format text`**（一条一行，体积约为 JSON 的 1/4）：
+
 ```bat
 rem 某个会话
-wechat-read summarize "群名" --since 2026-09-29 --until 2026-09-29 --output pack.json
+wechat-read summarize "群名" --format text --output chat.txt
 rem 全部会话（日报）
-wechat-read summarize --since 2026-09-29 --until 2026-09-29 --output pack.json
+wechat-read summarize --format text --output digest.txt
+```
+
+**`--format pack`（JSON，默认）只在 `render --verify-against` 时需要**：
+
+```bat
+wechat-read summarize "群名" --format pack --output pack.json
 ```
 
 | 参数 | 说明 |
@@ -149,21 +157,35 @@ wechat-read summarize --since 2026-09-29 --until 2026-09-29 --output pack.json
 | `chat` | 会话名或 wxid；**省略 = 日报** |
 | `--since` / `--until` | `YYYY-MM-DD` 或 epoch 秒；**都省略 = 今天** |
 | `--all` | 不限时间，从最早一条开始取（看全部历史时用） |
-| `--output` | 写输入包到文件（中间产物，UTF-8 无 BOM）；不带给则输出到 stdout |
+| `--format` | `text`=一条一行纯文本（读消息用）；`pack`=JSON（默认，校验用） |
+| `--limit` / `--offset` | 仅 `text`：按行切片，把大包切成几段 |
+| `--output` | 写文件（中间产物，UTF-8 无 BOM）；不带给则输出到 stdout |
 | `--include-low-value` | 保留低信息量消息（默认过滤） |
 | `--no-cache` | 不用增量缓存，每次全量（费 token） |
 | `--rebuild` | 忽略游标，从头处理 |
+
+文本形态每行一条，第 4 段起整段是内容：
+
+```
+<消息id> | <MM-DD HH:MM> | <发送者> | <内容>
+```
 
 > ⚠️ **不要用 `>` 重定向代替 `--output`。** PowerShell 的 `>` 会写
 > UTF-16（5.1）或带 BOM 的 UTF-8（7.x），后续读取必报编码错。
 > `--output` 由程序自己写标准 UTF-8。
 
-带 `--output` 时 stdout 只回一个回执：
+带 `--output` 时 stdout 只回一个回执。**`lines` 是关键** ——
+你据此算读文件要分几页，不必试错：
 
 ```json
-{"written": "pack.json", "kind": "daily_digest_input",
- "messages": 2369, "bytes": 803812, "hint": "把该文件路径连同提示词一起交给模型"}
+{"written": "chat.txt", "kind": "chat_summary_input", "format": "text",
+ "lines": 1122, "total_lines": 1122, "bytes": 76130,
+ "hint": "用读文件工具按 offset/limit 分页读完这个文件"}
 ```
+
+> ⚠️ **不要用 `python -c "..."` 去打印消息。** PowerShell 会剥掉参数里的
+> 双引号，只要命令含 `m["content"]` 这类字典取值就必报 SyntaxError。
+> 要跑 Python 请写脚本文件；更常见的是不需要 —— 用 `--format text`。
 
 流程见 `summarize-chat.md` 和 `daily-digest.md`。
 
@@ -188,10 +210,13 @@ wechat-read render 日报.json --verify-against pack.json --format html --output
 | 参数 | 说明 |
 |---|---|
 | `input` | 结论 JSON 文件（`-` = stdin） |
-| `--format` | `json`（只校验，不产文件）/ `text` / `markdown` / `html` |
+| `--format` | `json`（只校验，不产文件）/ `text`（紧凑文本骨架）/ `markdown`（给人看）/ `html`（单文件网页） |
 | `--output` | 写入文件 —— **只在用户要文件时给** |
 | `--verify-against` | 用输入包校验 `source_message_ids`，丢弃编造的 id |
 | `--save-summary` / `--no-save` | 是否把结论存进缓存（默认带 `--verify-against` 时存） |
+
+> `--format text` 渲染的是**结论**（话题/决定/待办），不含原始消息 ——
+> 与 `summarize --format text`（消息行）用途不同，别混。
 
 `--verify-against` 做三件事：校验溯源、保存摘要供下次增量、让 HTML
 支持点击回溯原文。

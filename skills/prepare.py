@@ -18,6 +18,7 @@ Agent 读 SKILL.md 的流程说明后，基于这个包产出最终结论。
 from __future__ import annotations
 
 import datetime
+import json
 import re
 
 from service import ServiceError, WeChatService
@@ -390,6 +391,133 @@ def digest_pack(svc: WeChatService, since=None, until=None,
         if reusable:
             out["cached_summaries"] = reusable
     return out
+
+
+# ============================================================
+# 紧凑文本形态（给宿主 Agent 读的）
+# ============================================================
+def _short_time(t) -> str:
+    """`2026-09-29 14:20:01` -> `09-29 14:20`；无法识别时原样返回。"""
+    s = str(t or "")
+    if len(s) >= 16 and s[4] == "-" and s[13] == ":":
+        return s[5:16]
+    return s
+
+
+def _one_line(s) -> str:
+    """把内容压成单行 —— 保证「一条消息 = 一行」，Agent 才能按行翻页。"""
+    return " ".join(str(s or "").split())
+
+
+def _msg_line(e: dict) -> str:
+    return (f"{e.get('id')} | {_short_time(e.get('time'))} | "
+            f"{_one_line(e.get('sender'))} | {_one_line(e.get('content'))}")
+
+
+def _cached_line(item: dict) -> str | None:
+    """已有摘要（previous_summary / cached_summaries）压成一行 JSON。"""
+    s = item.get("summary")
+    name = item.get("display_name") or item.get("username")
+    if not s:
+        return None
+    return f"#   已有摘要 {name}: " + json.dumps(
+        s, ensure_ascii=False, separators=(",", ":"))
+
+
+def compact_text(pack: dict) -> str:
+    """把输入包压成「一条消息一行」的纯文本，供 Agent 直接读。
+
+    为什么需要它：输入包的 JSON 形态（indent=2、每条 8 个字段）膨胀约 3.7 倍
+    —— 1115 条消息 = 315 KB / 11229 行，超过 Agent 读文件工具的单次上限，
+    Agent 读不进去只能自己写脚本切片。同内容的紧凑文本只有 85 KB / 1115 行，
+    两次读得完，也就没有写脚本的必要了。
+
+    行格式（每行一条，字段用 ` | ` 分隔，第 4 段起整段是内容）：
+
+        <消息id> | <MM-DD HH:MM> | <发送者> | <内容>
+
+    开头若干 `#` 行是元信息（范围、对账、统计），Agent 先读它们做完整性核对。
+    """
+    if pack.get("kind") == "daily_digest_input":
+        return _compact_digest(pack)
+    return _compact_chat(pack)
+
+
+def _compact_chat(pack: dict) -> str:
+    chat = pack.get("chat") or {}
+    rng = pack.get("range") or {}
+    audit = pack.get("audit") or {}
+    st = pack.get("stats") or {}
+    msgs = pack.get("messages") or []
+
+    out = [
+        f"# kind={pack.get('kind')}",
+        f"# chat={chat.get('display_name')} ({chat.get('username')}) "
+        f"group={1 if chat.get('is_group') else 0}",
+        f"# range={rng.get('since')} ~ {rng.get('until')}  "
+        f"messages={pack.get('message_count')} new={pack.get('new_message_count')} "
+        f"excluded_low_value={pack.get('excluded_low_value')}",
+        f"# audit: fetched={audit.get('fetched')} kept={audit.get('kept')} "
+        f"loss={audit.get('loss')} zero_loss={audit.get('zero_loss')} "
+        f"coverage={audit.get('coverage')}",
+        f"# top_senders=" + ", ".join(
+            f"{s.get('name')}({s.get('message_count')})"
+            for s in (st.get("top_senders") or [])[:8]),
+        f"# 每行一条：id | MM-DD HH:MM | 发送者 | 内容",
+    ]
+    if pack.get("incremental"):
+        inc = pack["incremental"]
+        out.append(f"# incremental: has_previous={inc.get('has_previous')} "
+                   f"new_messages={inc.get('new_messages')} "
+                   f"total_messages={inc.get('total_messages')}")
+    if pack.get("previous_summary"):
+        out.append("# 已有摘要（在其基础上补充，不要重新分析）: "
+                   + json.dumps(pack["previous_summary"], ensure_ascii=False,
+                                separators=(",", ":")))
+    out.append("")
+    out.extend(_msg_line(e) for e in msgs)
+    return "\n".join(out) + "\n"
+
+
+def _compact_digest(pack: dict) -> str:
+    rng = pack.get("range") or {}
+    audit = pack.get("audit") or {}
+    st = pack.get("stats") or {}
+    chats = pack.get("chats") or []
+
+    total = sum(len(c.get("messages") or []) for c in chats)
+    out = [
+        f"# kind={pack.get('kind')}",
+        f"# range={rng.get('since')} ~ {rng.get('until')}  "
+        f"chats={len(chats)} messages={total}",
+        f"# audit: fetched={audit.get('fetched')} kept={audit.get('kept')} "
+        f"loss={audit.get('loss')} zero_loss={audit.get('zero_loss')}",
+        f"# 每行一条：id | MM-DD HH:MM | 发送者 | 内容",
+    ]
+    if pack.get("incremental"):
+        inc = pack["incremental"]
+        out.append(f"# incremental: new_messages={inc.get('new_messages')} "
+                   f"chats_with_updates={inc.get('chats_with_updates')} "
+                   f"chats_reused_from_cache={inc.get('chats_reused_from_cache')}")
+    for s in pack.get("cached_summaries") or []:
+        line = _cached_line(s)
+        if line:
+            out.append(line)
+    out.append("")
+
+    for c in chats:
+        out.append("")
+        out.append(f"## {c.get('display_name')} ({c.get('username')}) "
+                   f"group={1 if c.get('is_group') else 0} "
+                   f"messages={c.get('message_count')} "
+                   f"new={c.get('new_message_count')} "
+                   f"excluded_low_value={c.get('excluded_low_value')}")
+        if c.get("previous_summary"):
+            out.append("#   已有摘要（在其基础上补充）: "
+                       + json.dumps(c["previous_summary"], ensure_ascii=False,
+                                    separators=(",", ":")))
+        out.extend(_msg_line(e) for e in (c.get("messages") or []))
+    return "\n".join(out) + "\n"
 
 
 def _fetch_all(svc: WeChatService, since, until) -> list[dict]:
